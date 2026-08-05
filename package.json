@@ -1,18 +1,20 @@
 {
   "name": "competitor-scraper-service",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "Playwright-based pricing discovery/scraping HTTP service for n8n Cloud",
+  "main": "server.js",
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node server.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
-    "playwright": "^1.62.1",
-    "playwright-extra": "^4.3.6",
-    "puppeteer-extra-plugin-stealth": "^2.11.2"
+    "express": "^4.19.2",
+    "playwright": "1.47.0"
   }
 }
