@@ -226,7 +226,7 @@ app.post('/discover', requireApiKey, async (req, res) => {
       return matches;
     });
 
-    const screenshotBuffer = await page.screenshot({ fullPage: true });
+    const screenshotBuffer = await page.screenshot({ fullPage: true, timeout: 45000 });
     const screenshotBase64 = screenshotBuffer.toString('base64');
 
     result = {
@@ -286,7 +286,7 @@ app.post('/scrape', requireApiKey, async (req, res) => {
       }
     }
 
-    const screenshotBuffer = await page.screenshot({ fullPage: true });
+    const screenshotBuffer = await page.screenshot({ fullPage: true, timeout: 45000 });
     const screenshotBase64 = screenshotBuffer.toString('base64');
 
     result = {
