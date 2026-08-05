@@ -212,7 +212,7 @@ app.post('/discover', requireApiKey, async (req, res) => {
       return matches;
     });
 
-    const screenshotBuffer = await page.screenshot({ fullPage: false, timeout: 20000 });
+    const screenshotBuffer = await page.screenshot({ fullPage: true, timeout: 45000 });
     const screenshotBase64 = screenshotBuffer.toString('base64');
 
     result = {
@@ -250,7 +250,7 @@ app.post('/scrape', requireApiKey, async (req, res) => {
     const { browser, page } = await launchStealthPage();
     browserHandle = browser;
 
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45000 });
+    await page.goto(url, { waitUntil: 'networkidle', timeout: 45000 });
     await dismissConsent(page);
 
     let priceText = null;
@@ -258,7 +258,7 @@ app.post('/scrape', requireApiKey, async (req, res) => {
 
     if (selector) {
       try {
-        await page.waitForSelector(selector, { timeout: 4000 });
+        await page.waitForSelector(selector, { timeout: 20000 });
         priceText = await page.locator(selector).first().innerText();
         selectorFound = true;
       } catch (_) {
@@ -266,7 +266,7 @@ app.post('/scrape', requireApiKey, async (req, res) => {
       }
     }
 
-    const screenshotBuffer = await page.screenshot({ fullPage: false, timeout: 20000 });
+    const screenshotBuffer = await page.screenshot({ fullPage: true, timeout: 45000 });
     const screenshotBase64 = screenshotBuffer.toString('base64');
 
     result = {
