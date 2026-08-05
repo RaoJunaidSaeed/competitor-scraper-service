@@ -58,23 +58,75 @@ async function launchStealthPage() {
   return { browser, context, page };
 }
 
+// async function dismissConsent(page) {
+//   const consentSelectors = [
+//     'text=/i understand/i', 'text=/accept all/i', 'text=/accept cookies/i',
+//     'text=/^accept$/i', 'text=/got it/i', 'text=/i agree/i',
+//     '#onetrust-accept-btn-handler'
+//   ];
+//   for (const sel of consentSelectors) {
+//     try {
+//       const btn = page.locator(sel).first();
+//       if (await btn.isVisible({ timeout: 1500 })) {
+//         await btn.click({ timeout: 1500, force: true });
+//         await page.waitForTimeout(400);
+//         break;
+//       }
+//     } catch (_) { /* try next */ }
+//   }
+// }
+
 async function dismissConsent(page) {
+  // 1. CSS Injection: Force-hide common enterprise cookie banners instantly
+  await page.addStyleTag({
+    content: `
+      #onetrust-consent-sdk,
+      #usercentrics-cm-ui,
+      .osano-cm-window,
+      .cc-window,
+      [id*="cookie-banner"],
+      [class*="cookie-banner"],
+      [id*="cookie-popup"],
+      [class*="cookie-popup"],
+      [id*="gdpr"],
+      [class*="gdpr"] {
+        display: none !important;
+      }
+    `
+  });
+
+  // 2. Button Clicking: Try to gracefully accept cookies
   const consentSelectors = [
-    'text=/i understand/i', 'text=/accept all/i', 'text=/accept cookies/i',
-    'text=/^accept$/i', 'text=/got it/i', 'text=/i agree/i',
+    'text=/accept all/i', 'text=/accept cookies/i', 'text=/allow all cookies/i',
+    'text=/^accept$/i', 'text=/got it/i', 'text=/i agree/i', 'button:has-text("Accept")',
     '#onetrust-accept-btn-handler'
   ];
+  
   for (const sel of consentSelectors) {
     try {
       const btn = page.locator(sel).first();
-      if (await btn.isVisible({ timeout: 1500 })) {
-        await btn.click({ timeout: 1500, force: true });
-        await page.waitForTimeout(400);
+      if (await btn.isVisible({ timeout: 1000 })) {
+        await btn.click({ timeout: 1000, force: true });
+        await page.waitForTimeout(500);
         break;
       }
-    } catch (_) { /* try next */ }
+    } catch (_) { /* try next selector */ }
   }
+
+  // 3. DOM Cleanup: Forcefully remove any remaining fixed/floating overlays
+  await page.evaluate(() => {
+    const elements = document.querySelectorAll('div, section, aside');
+    for (let el of elements) {
+      const style = window.getComputedStyle(el);
+      if (style.position === 'fixed' || style.position === 'sticky') {
+        if (/cookie|consent|gdpr|privacy/i.test(el.innerText)) {
+          el.remove(); 
+        }
+      }
+    }
+  });
 }
+
 
 app.post('/discover', requireApiKey, async (req, res) => {
   const { url } = req.body || {};
