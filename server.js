@@ -5,15 +5,16 @@
  * normal HTTP Request node.
  *
  * Endpoints:
- *   GET  /health   — simple uptime check, use this for Render's health check
- *   POST /discover — onboarding tool: scan a page for candidate price selectors
- *   POST /scrape   — production tool: extract price using a known selector (Tier 2),
- *                     falls back to returning a screenshot for Vision (Tier 3) if the
- *                     selector fails or isn't provided
+ *   GET  /health                — simple uptime check, use this for Render's health check
+ *   POST /discover              — onboarding tool: scan a page for candidate price selectors
+ *   POST /scrape                — production tool: extract price using a known selector (Tier 2),
+ *                                   falls back to returning a screenshot for Vision (Tier 3) if the
+ *                                   selector fails or isn't provided
  *
  * Auth: every request (except /health) must include header
  *   x-api-key: <SERVICE_API_KEY>
- * matching the SERVICE_API_KEY environment variable set in Render.
+ * matching the SERVICE_API_KEY environment variable set in Render — this stops
+ * random internet traffic from using your deployed browser as a public scraper.
  */
 
 const express = require('express');
@@ -25,8 +26,10 @@ app.use(express.json());
 const PORT = process.env.PORT || 3000;
 const SERVICE_API_KEY = process.env.SERVICE_API_KEY;
 
+// ---- Simple API key gate ----
 function requireApiKey(req, res, next) {
   if (!SERVICE_API_KEY) {
+    // Fail closed if the env var isn't set at all — never run unauthenticated in production
     return res.status(500).json({ success: false, error: 'Server misconfigured: SERVICE_API_KEY not set' });
   }
   const key = req.header('x-api-key');
@@ -40,6 +43,7 @@ app.get('/health', (req, res) => {
   res.json({ success: true, status: 'ok', uptime_seconds: process.uptime() });
 });
 
+// ---- Shared browser launch helper ----
 async function launchStealthPage() {
   const browser = await chromium.launch({
     headless: true,
@@ -75,6 +79,10 @@ async function dismissConsent(page) {
   }
 }
 
+// =====================================================================
+// POST /discover  — onboarding tool (mirrors discover-pricing.js)
+// Body: { "url": "https://example.com/pricing" }
+// =====================================================================
 app.post('/discover', requireApiKey, async (req, res) => {
   const { url } = req.body || {};
   if (!url) return res.status(400).json({ success: false, error: 'Missing "url" in request body' });
@@ -90,14 +98,14 @@ app.post('/discover', requireApiKey, async (req, res) => {
 
     try {
       await page.waitForLoadState('networkidle', { timeout: 15000 });
-    } catch (_) { /* some sites never go fully idle */ }
+    } catch (_) { /* some sites never go fully idle — proceed anyway */ }
 
     try {
       await page.waitForFunction(
         () => /(\$|€|£)\s?\d/.test(document.body.innerText || ''),
         { timeout: 8000 }
       );
-    } catch (_) { /* proceed */ }
+    } catch (_) { /* proceed — likelyBlocked check below will flag it */ }
 
     const bodyText = await page.evaluate(() => document.body.innerText || '');
     const bodyTextLength = bodyText.trim().length;
@@ -108,6 +116,7 @@ app.post('/discover', requireApiKey, async (req, res) => {
 
     await dismissConsent(page);
 
+    // Strategy 1: JSON-LD structured data
     const structuredData = await page.evaluate(() => {
       const scripts = Array.from(document.querySelectorAll('script[type="application/ld+json"]'));
       const found = [];
@@ -130,11 +139,12 @@ app.post('/discover', requireApiKey, async (req, res) => {
               }
             }
           }
-        } catch (_) { /* skip */ }
+        } catch (_) { /* not valid JSON-LD, skip */ }
       }
       return found;
     });
 
+    // Strategy 2: regex price-pattern scan with selector generation
     const patternMatches = await page.evaluate(() => {
       const priceRegex = /(\$|€|£|USD|EUR|GBP)\s?\d{1,3}(,\d{3})*(\.\d{1,2})?/;
 
@@ -145,13 +155,18 @@ app.post('/discover', requireApiKey, async (req, res) => {
             !/-sc-[a-z0-9]{5,10}(-\d+)?$/i.test(c) &&
             !/[0-9a-f]{8}-[0-9a-f]{4}/i.test(c)
           );
-        if (stableClass) return `${el.tagName.toLowerCase()}.${stableClass}`;
+        if (stableClass) return `${el.tagName.toLowerCase()}.${CSS.escape(stableClass)}`;
 
         let path = [];
         let node = el;
         while (node && node !== document.body) {
-          if (node.id) {
-            path.unshift(`#${node.id}`);
+          // Skip IDs with characters that make a valid-but-unsafe selector fragment
+          // even after CSS.escape (e.g. Radix UI's "radix-:r1:" style auto IDs
+          // contain colons that are fine to escape individually, but building a
+          // clean, short "#id" is only worth it for plain alphanumeric IDs —
+          // anything else falls through to the nth-child path instead).
+          if (node.id && /^[a-zA-Z][\w-]*$/.test(node.id)) {
+            path.unshift(`#${CSS.escape(node.id)}`);
             break;
           }
           const parent = node.parentElement;
@@ -193,10 +208,17 @@ app.post('/discover', requireApiKey, async (req, res) => {
         if (!el || seen.has(el)) continue;
         seen.add(el);
 
+        const sel = buildSelector(el);
+        let matchCount = null;
+        try {
+          matchCount = document.querySelectorAll(sel).length;
+        } catch (_) {
+          matchCount = null; // selector couldn't be safely queried — still return it for visibility
+        }
         matches.push({
           text: text.slice(0, 80),
-          selector: buildSelector(el),
-          selectorMatchCount: document.querySelectorAll(buildSelector(el)).length,
+          selector: sel,
+          selectorMatchCount: matchCount,
           nearestHeading: nearestHeading(el),
           tag: el.tagName.toLowerCase()
         });
@@ -218,8 +240,8 @@ app.post('/discover', requireApiKey, async (req, res) => {
       note: likelyBlocked
         ? 'Page appears blocked or never fully rendered. Screenshot returned — inspect manually.'
         : structuredData.length > 0
-          ? 'Structured data (JSON-LD) found — prefer these values.'
-          : 'No structured data found — review patternMatches or use the /scrape Vision fallback.'
+          ? 'Structured data (JSON-LD) found — prefer these values, they are more stable than CSS selectors.'
+          : 'No structured data found — review patternMatches and pick a selector, or use the /scrape Vision fallback.'
     };
 
   } catch (err) {
@@ -231,6 +253,12 @@ app.post('/discover', requireApiKey, async (req, res) => {
   res.json(result);
 });
 
+// =====================================================================
+// POST /scrape  — production tool for Node 6/7 in the n8n workflow
+// Body: { "url": "...", "selector": ".pricing-card__price" }
+// Always returns a screenshot too, so the caller (n8n) can fall through
+// to Claude Vision (Tier 3) if the selector extraction fails.
+// =====================================================================
 app.post('/scrape', requireApiKey, async (req, res) => {
   const { url, selector } = req.body || {};
   if (!url) return res.status(400).json({ success: false, error: 'Missing "url" in request body' });
@@ -253,7 +281,9 @@ app.post('/scrape', requireApiKey, async (req, res) => {
         await page.waitForSelector(selector, { timeout: 4000 });
         priceText = await page.locator(selector).first().innerText();
         selectorFound = true;
-      } catch (_) { /* falls through to screenshot for Vision */ }
+      } catch (_) {
+        // selector failed — fall through, screenshot still gets taken for Vision fallback
+      }
     }
 
     const screenshotBuffer = await page.screenshot({ fullPage: true });
